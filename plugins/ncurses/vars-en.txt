@@ -156,6 +156,13 @@ margin_size
 	
 	defines margin size used by /| with themes
 
+timestamp_once
+	type: bool
+	default value: 0
+	
+	if set to 1, print timestamp only once on long line; this helps to avoid
+	breaking long URLs
+
 mark_on_window_change
 	type: bool
 	default value: 1

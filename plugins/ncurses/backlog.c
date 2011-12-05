@@ -154,24 +154,29 @@ int ncurses_backlog_split(window_t *w, int full, int removed)
 				l->prompt_attr = NULL;
 			}
 
-			if ((!w->floating || (w->id == WINDOW_LASTLOG_ID && ts)) && timestamp_format) {
-				fstring_t *s = NULL;
+			if (config_timestamp_once && wrapping) {
+				l->prompt_str = NULL;
+				l->prompt_len = 0;
+			} else {
+				if ((!w->floating || (w->id == WINDOW_LASTLOG_ID && ts)) && timestamp_format) {
+					fstring_t *s = NULL;
 
-				if (!ts || lastts != ts) {	/* generate new */
-					struct tm *tm = localtime(&ts);
+					if (!ts || lastts != ts) {	/* generate new */
+						struct tm *tm = localtime(&ts);
 
-					strftime(lasttsbuf, sizeof(lasttsbuf)-1, timestamp_format, tm);
-					lastts = ts;
+						strftime(lasttsbuf, sizeof(lasttsbuf)-1, timestamp_format, tm);
+						lastts = ts;
+					}
+
+					s = fstring_new(lasttsbuf);
+
+					l->ts = s->str;
+					ts_width = xmbswidth(l->ts, xstrlen(l->ts));
+					ts_width++;			/* for separator between timestamp and text */
+					l->ts_attr = s->attr;
+
+					xfree(s);
 				}
-
-				s = fstring_new(lasttsbuf);
-
-				l->ts = s->str;
-				ts_width = xmbswidth(l->ts, xstrlen(l->ts));
-				ts_width++;			/* for separator between timestamp and text */
-				l->ts_attr = s->attr;
-
-				xfree(s);
 			}
 
 			width = w->width - ts_width - prompt_width - n->margin_left - n->margin_right; 

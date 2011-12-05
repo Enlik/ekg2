@@ -111,8 +111,9 @@ extern int config_backlog_scroll_half_page;
 extern int config_display_transparent;
 extern int config_enter_scrolls;
 extern int config_margin_size;
-extern int config_kill_irc_window;
 
+extern int config_kill_irc_window;
+extern int config_timestamp_once;
 extern int config_text_bottomalign;
 
 int ncurses_lastlog_update(window_t *w);

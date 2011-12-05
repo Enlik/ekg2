@@ -212,6 +212,13 @@ margin_size
 	
 	określa rozmiar marginesu wykorzystywanego przy /| w themach
 
+timestamp_once
+	typ: bool
+	domyślna wartość: 0
+	
+	jeśli 1, pisz datownik tylko raz przy długiej linii; pomaga uniknąć łamania
+	długich URL-i
+
 mark_on_window_change
 	typ: bool
 	domyślna wartość: 0

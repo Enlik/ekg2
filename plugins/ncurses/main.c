@@ -45,6 +45,7 @@ int config_backlog_scroll_half_page;
 int config_display_transparent;
 int config_enter_scrolls;
 int config_margin_size;
+int config_timestamp_once;;
 int config_mark_on_window_change	= 0;
 int config_kill_irc_window		= 1;
 int config_lastlog_size;
@@ -469,6 +470,7 @@ static QUERY(ncurses_setvar_default)
 	config_header_size = 0;
 	config_enter_scrolls = 0;
 	config_margin_size = 15;
+	config_timestamp_once = 0; /* nie niszcz d³ugich linii (np. z URL-em) datownikiem (domy¶lnie wy³.) */
 	config_mark_on_window_change = 0;
 #ifdef HAVE_LIBASPELL
 	xfree(config_aspell_lang);
@@ -726,6 +728,7 @@ EXPORT int ncurses_plugin_init(int prio)
 	variable_add(&ncurses_plugin, ("header_size"), VAR_INT, 1, &config_header_size, header_statusbar_resize, NULL, NULL);
 	variable_add(&ncurses_plugin, ("kill_irc_window"),  VAR_BOOL, 1, &config_kill_irc_window, NULL, NULL, NULL);
 	variable_add(&ncurses_plugin, ("margin_size"), VAR_INT, 1, &config_margin_size, NULL, NULL, NULL);
+	variable_add(&ncurses_plugin, ("timestamp_once"), VAR_BOOL, 1, &config_timestamp_once, NULL, NULL, NULL);
 	variable_add(&ncurses_plugin, ("mark_on_window_change"), VAR_BOOL, 1, &config_mark_on_window_change, NULL, NULL, NULL);
 	variable_add(&ncurses_plugin, ("statusbar_size"), VAR_INT, 1, &config_statusbar_size, header_statusbar_resize, NULL, NULL);
 	variable_add(&ncurses_plugin, ("text_bottomalign"), VAR_INT, 1, &config_text_bottomalign, NULL,
