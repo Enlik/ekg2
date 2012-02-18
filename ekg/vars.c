@@ -121,7 +121,7 @@ void variable_init() {
 	variable_add(NULL, ("tab_command"), VAR_STR, 1, &config_tab_command, NULL, NULL, NULL);
 	variable_add(NULL, ("theme"), VAR_THEME, 1, &config_theme, changed_theme, NULL, NULL);
 	variable_add(NULL, ("time_deviation"), VAR_INT, 1, &config_time_deviation, NULL, NULL, NULL);
-	variable_add(NULL, ("timestamp"), VAR_STR, 1, &config_timestamp, NULL, NULL, NULL);	/* ? */
+	variable_add(NULL, ("timestamp"), VAR_STR, 1, &config_timestamp, changed_config_timestamp, NULL, NULL);	/* ? */
 	variable_add(NULL, ("timestamp_show"), VAR_BOOL, 1, &config_timestamp_show, NULL, NULL, NULL);
 	variable_add(NULL, ("window_session_allow"), VAR_INT, 1, &config_window_session_allow, NULL, variable_map(4, 0, 0, "deny", 1, 6, "uid-capable", 2, 5, "any", 4, 3, "switch-to-status"), NULL);
 	variable_add(NULL, ("windows_layout"), VAR_STR, 2, &config_windows_layout, NULL, NULL, NULL);
@@ -148,6 +148,7 @@ void variable_set_default() {
 	config_dcc_dir = NULL;
 
 	config_timestamp = xstrdup("\\%H:\\%M:\\%S");
+	changed_config_timestamp("timestamp");
 	config_completion_char = xstrdup(":");
 	config_display_color_map = xstrdup("nTgGbBrR");
 	config_subject_prefix = xstrdup("## ");

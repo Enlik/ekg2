@@ -28,6 +28,7 @@
 #include <errno.h>
 
 #include "objects.h"
+#include "abort.h"
 
 GSList *plugins = NULL;
 /* XXX: not freed anywhere yet */
@@ -220,6 +221,34 @@ int plugin_load(const char *name, int prio, int quiet)
 	}
 
 	g_free(libname);
+
+#ifdef PLUGIN_SUFFIX
+	/* no .la found? try the standard suffix as well */
+	if (!plugin) {
+		libname = g_strdup_printf("%s" PLUGIN_SUFFIX, name);
+
+		if ((env_ekg_plugins_path = g_getenv("EKG_PLUGINS_PATH"))) {
+			lib = g_build_filename(env_ekg_plugins_path, libname, NULL);
+			plugin = ekg2_dlopen(lib);
+			g_free(lib);
+
+			if (!plugin) {
+				lib = g_build_filename(env_ekg_plugins_path, name, libname, NULL);
+				plugin = ekg2_dlopen(lib);
+				g_free(lib);
+			}
+		}
+
+		if (!plugin) {
+			lib = g_build_filename(PLUGINDIR, libname, NULL);
+			plugin = ekg2_dlopen(lib);
+			g_free(lib);
+		}
+
+		g_free(libname);
+	}
+#endif
+
 	/* prefer shared plugins */
 	if (plugin) {
 		init = g_strdup_printf("%s_plugin_init", name);
@@ -385,6 +414,8 @@ int plugin_unload(plugin_t *p)
 
 	if (p->destroy)
 		p->destroy();
+
+	ekg2_unregister_abort_handlers_for_plugin(p);
 
 #ifdef SHARED_LIBS
 	if (p->dl)

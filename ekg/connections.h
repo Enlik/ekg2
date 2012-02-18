@@ -43,19 +43,17 @@ typedef void (*ekg_connection_failure_callback_t) (
 		GError *err,
 		gpointer data);
 
-typedef enum {
-	EKG_INPUT_RAW,
-	EKG_INPUT_LINE
-} ekg_input_type_t;
-
 GDataOutputStream *ekg_connection_add(
 		GSocketConnection *conn,
 		GInputStream *rawinstream,
 		GOutputStream *rawoutstream,
-		ekg_input_type_t intype,
 		ekg_input_callback_t callback,
 		ekg_failure_callback_t failure_callback,
 		gpointer priv_data);
+
+void ekg_disconnect_by_outstream(GDataOutputStream *f);
+
+void ekg_connection_write_buf(GDataOutputStream *f, gconstpointer buf, gsize len);
 
 void ekg_connection_write(
 		GDataOutputStream *f,

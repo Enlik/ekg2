@@ -511,16 +511,26 @@ void irc_handle_disconnect(session_t *s, const char *reason, int type)
 	xfree(__reason);
 }
 
-static void irc_handle_line(GDataInputStream *f, gpointer data) {
+static void irc_handle_line(GDataInputStream *input, gpointer data) {
 	session_t *s = data;
 	gchar *l;
 
-	l = g_data_input_stream_read_line(f, NULL, NULL, NULL);
-		/* XXX: get rid of that fd arg */
-	if (l) {
-		irc_parse_line(s, l, -1);
-		g_free(l);
-	}
+	const char *buf;
+	const char *le = "\n";
+	gsize count;
+	gboolean found;
+
+	do { /* repeat till user grabs all lines */
+		buf = g_buffered_input_stream_peek_buffer(G_BUFFERED_INPUT_STREAM(input), &count);
+		found = !!g_strstr_len(buf, count, le);
+		if (found) {
+			l = g_data_input_stream_read_line(input, NULL, NULL, NULL);
+			if (l) {
+				irc_parse_line(s, l, -1);
+				g_free(l);
+			}
+		}
+	} while (found);
 }
 
 static void irc_handle_failure(GDataInputStream *f, GError *err, gpointer data) {
@@ -549,21 +559,24 @@ static void irc_handle_connect(
 			conn,
 			instream,
 			outstream,
-			EKG_INPUT_LINE,
 			irc_handle_line,
 			irc_handle_failure,
 			s);
 
 	{
 		const gchar *real = session_get(s, "realname");
-		const gchar *hostname = session_get(s, "hostname");
+		const gchar *mode = session_get(s, "usermode");
 		const gchar *pass = session_password_get(s); /* XXX: we used to strip_spaces() here?! */
+
+		/* XXX: check space in j->nick and mode */
 
 		if (pass && *pass)
 			ekg_fprintf(G_OUTPUT_STREAM(j->send_stream), "PASS %s\r\n", pass);
 		ekg_connection_write(j->send_stream,
-				"USER %s %s unused_field :%s\r\nNICK %s\r\n",
-				j->nick, hostname ? hostname : "12", real, j->nick);
+				"USER %s %s unused_field :%s\r\n"
+				"NICK %s\r\n",
+				j->nick, (mode && *mode) ? mode : EKG_IRC_DEFAULT_USERMODE, (real && *real) ? real : j->nick,
+				j->nick);
 	}
 }
 
@@ -1609,7 +1622,7 @@ static COMMAND(irc_command_ping) {
 		return -1;
 
 	g_get_current_time(&tv);
-	ekg_connection_write(irc_private(session)->send_stream, "PRIVMSG %s :\01PING %d %d\01\r\n",
+	ekg_connection_write(irc_private(session)->send_stream, "PRIVMSG %s :\01PING %ld %ld\01\r\n",
 			who+4 ,tv.tv_sec, tv.tv_usec);
 
 	g_strfreev(mp);
@@ -1711,7 +1724,7 @@ static QUERY(irc_status_show_handle) {
 	session_t	*s = session_find(*uid);
 	irc_private_t	*j;
 
-	const char	*p[1];
+	const char	*p[2];
 
 	if (!s)
 		return -1;
@@ -1741,8 +1754,16 @@ static COMMAND(irc_command_query) {
 		     * that to be clearly visible
 		     */
 
-	if (params[0] && (tmp = xstrrchr(params[0], '/'))) {
-		tmp++;
+	if (p[0] && (tmp = xstrrchr(p[0], '/'))) {
+		session_t *s;
+
+		*tmp++ = 0;
+
+		if ((s = session_find(p[0])) && (s != session)) {
+			command_exec_format(NULL, s, 0, ("/query \"%s\""), tmp);
+			g_strfreev(p);
+			return -1;
+		}
 
 		xfree(p[0]);
 		p[0] = xstrdup(tmp);
@@ -1866,8 +1887,19 @@ char *nickpad_string_restore(channel_t *chan)
 /*									 *
  * ======================================== INIT/DESTROY --------------- *
  *									 */
+#define VAR_MAP_ADD(v, c, l)	{ l, v, c }
+#define VAR_MAP_END()		{ NULL, 0, 0 }
 
 #define params(x) x
+#include <ekg/vars.h>
+
+static variable_map_t ban_type_map[] = {
+		VAR_MAP_ADD( 1, 0, "nick"),
+		VAR_MAP_ADD( 2, 0, "user"),
+		VAR_MAP_ADD( 3, 0, "host"),
+		VAR_MAP_ADD( 4, 0, "domain"),
+		VAR_MAP_END()
+	};
 
 static plugins_params_t irc_plugin_vars[] = {
 	/* lower case: names of variables that reffer to client itself */
@@ -1882,7 +1914,7 @@ static plugins_params_t irc_plugin_vars[] = {
 	PLUGIN_VAR_ADD("auto_channel_sync",	VAR_BOOL, "1", 0, NULL),		/* like channel_sync in irssi; better DO NOT turn it off! */
 	PLUGIN_VAR_ADD("auto_lusers_sync",	VAR_BOOL, "0", 0, NULL),		/* sync lusers, stupid ;(,  G->dj: well why ? */
 	PLUGIN_VAR_ADD("away_log",		VAR_BOOL, "1", 0, NULL),
-	PLUGIN_VAR_ADD("ban_type",		VAR_INT, "10", 0, NULL),
+	PLUGIN_VAR_ADD_MAP("ban_type",		VAR_MAP, "10", 0, NULL, ban_type_map ),
 	PLUGIN_VAR_ADD("connect_timeout",	VAR_INT, "0", 0, NULL),
 	PLUGIN_VAR_ADD("close_windows",		VAR_BOOL, "0", 0, NULL),
 	PLUGIN_VAR_ADD("dcc_port",		VAR_INT, "0", 0, NULL),
@@ -1903,6 +1935,7 @@ static plugins_params_t irc_plugin_vars[] = {
 	PLUGIN_VAR_ADD("recode_out_default_charset", VAR_STR, NULL, 0, irc_changed_recode),		/* irssi-like-variable */
 	PLUGIN_VAR_ADD("server",                VAR_STR, 0, 0, NULL),
 	PLUGIN_VAR_ADD("statusdescr",           VAR_STR, 0, 0, irc_statusdescr_handler),
+	PLUGIN_VAR_ADD("usermode",		VAR_STR, "+iw", 0, NULL),
 	PLUGIN_VAR_ADD("use_tls",		VAR_BOOL, "0", 0, NULL),
 
 	/* upper case: names of variables, that reffer to protocol stuff */

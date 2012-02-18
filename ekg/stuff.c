@@ -140,6 +140,8 @@ char *last_search_last_name = NULL;
 char *last_search_nickname = NULL;
 char *last_search_uid = 0;
 
+char *formated_config_timestamp = NULL;
+
 int ekg2_reason_changed = 0;
 
 /*
@@ -607,6 +609,16 @@ void changed_theme(const char *var)
 			variable_set(("theme"), NULL);
 		}
 	}
+}
+
+/*
+ * changed_theme()
+ *
+ * funkcja wywo³ywana przy zmianie warto¶ci zmiennej ,,config_timestamp''.
+ */
+void changed_config_timestamp(const char *var) {
+	xfree(formated_config_timestamp);
+	formated_config_timestamp = (config_timestamp && *config_timestamp) ? format_string(config_timestamp) : NULL;
 }
 
 /**
@@ -1817,6 +1829,10 @@ int isalpha_pl(unsigned char c)
 	return 0;
 }
 
+void ignore_result_helper(int __attribute__((unused)) dummy, ...)
+{
+}
+
 /*
  * strcasestr()
  *
@@ -2539,6 +2555,177 @@ int is_utf8_string(const char *txt) {
 	}
 
 	return 1;
+}
+
+/***************** variable stuff ******************/
+
+/*
+ * get_variable_value()
+ *
+ * Returns: a newly-allocated string holding the variable value.
+ * The returned string should be freed with g_free() when no longer needed.
+ */
+static char *get_variable_value(variable_t *v) {
+	/* We delay variable initialization until the
+	 * type is known to be such that is properly
+	 * aligned for reading an int.
+	 */
+	int number = *(int*)(v->ptr);
+	gchar *value = NULL;
+
+	if (!v->display) {
+		value = xstrdup(("(...)"));
+	} else if (v->type == VAR_STR || v->type == VAR_FILE || v->type == VAR_DIR || v->type == VAR_THEME) {
+		char *string = *(char**)(v->ptr);
+		value = (string) ? saprintf(("\"%s\""), string) : xstrdup(("(none)"));
+	} else if (v->type == VAR_BOOL) {
+		value = xstrdup( (number) ? ("1 (on)") : ("0 (off)") );
+	} else if ((v->type == VAR_INT || v->type == VAR_MAP) && !v->map) {
+		value = xstrdup(ekg_itoa(number));
+	} else if (v->type == VAR_INT && v->map) {
+		int i;
+
+		for (i = 0; v->map[i].label; i++)
+			if (v->map[i].value == number) {
+				value = saprintf(("%d (%s)"), number, v->map[i].label);
+				break;
+			}
+
+		if (!value)
+			value = saprintf(("%d"), number);
+
+	} else if (v->type == VAR_MAP && v->map) {
+		GString *s = g_string_new(ekg_itoa(number));
+		int i, first = 1;
+
+		for (i = 0; v->map[i].label; i++) {
+			if ((number & v->map[i].value) || (!number && !v->map[i].value)) {
+				g_string_append(s, (first) ? (" (") : (","));
+				first = 0;
+				g_string_append(s, v->map[i].label);
+			}
+		}
+
+		if (!first)
+			g_string_append_c(s, (')'));
+
+		value = g_string_free(s, FALSE);
+	} else if (v->type == -1) {
+		/* specjal type for "status" */
+		char *string = *(char**)(v->ptr);
+		value = string ? saprintf(("%s"), string) : xstrdup("");
+	}
+
+	return value;
+}
+
+/*
+ * variable_display()
+ *
+ * Displays variable value.
+ */
+void variable_display(variable_t *v, int quiet) {
+	gchar *value;
+
+	if (quiet || v->display == 2)
+		return;
+	
+	value = get_variable_value(v);
+	printq("variable", v->name, value);
+	g_free(value);
+}
+
+/*
+ * get_fake_sess_variable()
+ *
+ * Creates (variable_t) variable from session variable.
+ * The returned value should be freed with g_free() when no longer needed.
+ */
+static variable_t *get_fake_sess_variable(session_t *s, const char *name) {
+	static int fake_int_value;
+	const char *val;
+	variable_t *var = g_malloc0(sizeof(variable_t));
+	int id;
+
+	var->name = (char *)name;
+	var->type = VAR_STR;
+	var->display = 1;
+	var->ptr = &val;
+
+	/* emulate session_get() */
+	if (!xstrcasecmp(name, "uid"))		val = session_uid_get(s);
+	else if (!xstrcasecmp(name, "alias"))	val = session_alias_get(s);
+	else if (!xstrcasecmp(name, "descr"))	val = session_descr_get(s);
+	else if (!xstrcasecmp(name, "status"))	{ var->type = -1; val = ekg_status_string(session_status_get(s), 2); }
+	else if (!xstrcasecmp(name, "statusdescr")) var->display = 2;
+	else if (!xstrcasecmp(name, "password")) var->display = 0;
+	else if ((id = plugin_var_find(s->plugin, name))) {
+		plugins_params_t *pa = &(((plugin_t *) s->plugin)->params[id-1]);
+		var->type = pa->type;
+		var->map = pa->map;
+		if ((var->type == VAR_INT) || (var->type == VAR_BOOL) || (var->type == VAR_MAP)) {
+			fake_int_value = s->values[id-1] ? atoi(s->values[id-1]) : 0;
+			var->ptr = &fake_int_value;
+		} else
+			val = s->values[id-1];
+
+		if (pa->secret)
+			var->display = 0;
+	} else {
+		g_free(var);
+		return NULL;
+	}
+
+	return var;
+}
+
+/*
+ * session_variable_display()
+ *
+ * Displays session variable value (/session --get [session uid] <variable name>)
+ *
+ */
+int session_variable_display(session_t *s, const char *name, int quiet) {
+	gchar *value = NULL;
+	variable_t *var;
+
+	if (!(var = get_fake_sess_variable(s, name)))
+		return 0;
+
+	if (var->display != 2) {
+		value = get_variable_value(var);
+		printq("session_variable", session_name(s), name, value);
+	}
+
+	g_free(value);
+	g_free(var);
+
+	return 1;
+}
+
+/*
+ * session_variable_info()
+ *
+ * Displays variable value (/session <session uid>)
+ */
+void session_variable_info(session_t *s, const char *name, int quiet) {
+	gchar *value = NULL;
+	variable_t *var;
+
+	if ( quiet || !xstrcmp(name, "alias") )
+		return;
+
+	if (!(var = get_fake_sess_variable(s, name)))
+		return;
+
+	if (var->display != 2) {
+		value = get_variable_value(var);
+		printq("session_info_param", name, value);
+	}
+
+	g_free(value);
+	g_free(var);
+
 }
 
 /*

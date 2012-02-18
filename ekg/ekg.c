@@ -220,104 +220,61 @@ static void handle_sighup()
 	ekg_exit();
 }
 
-static void do_crash_writes(void)
+/**
+ * Notifies plugins, writes the message to stderr, with last_err_message.
+ *
+ * We are only allowed to call POSIX-defined "async-signal-safe functions" here
+ * (see signal(7)), because anything else can result in a "bad thing" such as a
+ * deadlock (e.g. if the signal was a result of a malloc()/free()) or a
+ * segfault. There were cases of this happening to ekg2.
+ *
+ * In order to avoid touching the (possibly corrupt) heap, we invoke statically
+ * stored set of abort handlers. This is the mechanism we use to notify UI and
+ * logs plugins to reset the terminal and sync their output as necessary.
+ */
+static void handle_fatal_signal(char *message)
 {
-	gchar *config_dir = g_build_filename(
-			g_get_user_config_dir(),
-			"ekg2",
-			config_profile,
-			NULL);
-
-	fprintf(stderr,
-"The program will attempt to write its settings, but it is not\r\n"
-"guaranteed to succeed. They will be saved as\r\n"
-"%s/crash-%d-config,\r\n"
-"%s/crash-%d-config-<plugin>\r\n"
-"and %s/crash-%d-userlist\r\n"
-"\r\n"
-"Last messages from the debugging window will be saved to a file called\r\n"
-"%s/crash-%d-debug.\r\n"
-"\r\n"
-"If a file called %s/core will be created, try running the following\r\n"
-"command:\r\n"
-"\r\n"
-"    gdb %s %s/core\r\n"
-"\n"
-"note the last few lines, and then note the output from the ,,bt'' command.\r\n"
-"This will help the program authors find the location of the problem\r\n"
-"and most likely will help avoid such crashes in the future.\r\n"
-"More details can be found in the documentation, in the file ,,gdb.txt''.\r\n"
-"\r\n",
-config_dir, (int) getpid(), config_dir, (int) getpid(), config_dir, (int) getpid(), config_dir, (int) getpid(), config_dir, argv0, config_dir);
-
-	config_write_crash();
-	userlist_write_crash();
-	debug_write_crash();
-	config_commit();
-
-	/* Place core there too (temporarily) */
-	g_chdir(config_dir);
-	g_free(config_dir);
-}
-
-static void handle_sigabrt()
-{
-	GSList *pl;
-
-	signal(SIGABRT, SIG_DFL);
+	const char *err_msg_prefix = "Last error message (if any): ";
+	const char *debug_instructions = "If a file called core is be created, try running the following\r\n"
+	"command:\r\n"
+	"\r\n"
+	"    gdb ekg2 core\r\n"
+	"\n"
+	"note the last few lines, and then note the output from the ,,bt'' command.\r\n"
+	"This will help the program authors find the location of the problem\r\n"
+	"and most likely will help avoid such crashes in the future.\r\n";
 
 	if (stderr_backup && stderr_backup != -1)
 		dup2(stderr_backup, 2);
 
-	/* wy³±cz pluginy ui, ¿eby odda³y terminal
-	 * destroy also log plugins to make sure that latest changes are written */
-	for (pl = plugins; pl; pl = pl->next) {
-		const plugin_t *p = pl->data;
-		if (p->pclass != PLUGIN_UI && p->pclass != PLUGIN_LOG)
-			continue;
+	/* Notify plugins of impending doom. */
+	ekg2_run_all_abort_handlers();
 
-		p->destroy();
-	}
+	/* Now that the terminal is (hopefully) back to plain text mode, write messages. */
+	/* There is nothing we can do if this fails, so suppress warnings about ignored results. */
+	IGNORE_RESULT(write(2, "\r\n\r\n *** ", 9));
+	IGNORE_RESULT(write(2, message, strlen(message)));
+	IGNORE_RESULT(write(2, " ***\r\n", 6));
+	IGNORE_RESULT(write(2, err_msg_prefix, strlen(err_msg_prefix)));
+	IGNORE_RESULT(write(2, last_err_message, strlen(last_err_message)));
+	IGNORE_RESULT(write(2, "\r\n", 2));
+	IGNORE_RESULT(write(2, debug_instructions, strlen(debug_instructions)));
+}
 
-	fprintf(stderr,
-"\r\n"
-"\r\n"
-"*** Abnormal program termination ***\r\n"
-"\r\n"
-"%s"
-"\r\n", last_err_message);
-
-	do_crash_writes();
+/* See handle_fatal_signal comment. */
+static void handle_sigabrt()
+{
+	signal(SIGABRT, SIG_DFL);
+	handle_fatal_signal("Abnormal program termination");
 	raise(SIGABRT);
 }
 
+/* See handle_fatal_signal comment. */
 static void handle_sigsegv()
 {
-	GSList *pl;
-
 	signal(SIGSEGV, SIG_DFL);
-
-	if (stderr_backup && stderr_backup != -1)
-		dup2(stderr_backup, 2);
-
-	/* wy³±cz pluginy ui, ¿eby odda³y terminal
-	 * destroy also log plugins to make sure that latest changes are written */
-	for (pl = plugins; pl; pl = pl->next) {
-		const plugin_t *p = pl->data;
-		if (p->pclass != PLUGIN_UI && p->pclass != PLUGIN_LOG)
-			continue;
-
-		p->destroy();
-	}
-
-	fprintf(stderr,
-"\r\n"
-"\r\n"
-"*** Segmentation violation detected ***\r\n"
-"\r\n");
-
-	do_crash_writes();
-	raise(SIGSEGV);			/* niech zrzuci core */
+	handle_fatal_signal("Segmentation violation detected");
+	raise(SIGSEGV);
 }
 #endif
 
@@ -499,36 +456,42 @@ static GOptionEntry ekg_options[] = {
 	{ NULL }
 };
 
+struct option_callback_args {
+	gint *new_status;
+	gchar **new_descr;
+};
+
+gboolean set_status_callback(const gchar *optname, const gchar *optval,
+		gpointer data, GError **error)
+{
+	struct option_callback_args *args = data;
+
+	gchar c = optname[1] == '-' ? optname[2] : optname[1];
+	switch (c) {
+		case 'a': *args->new_status = EKG_STATUS_AWAY; break;
+		case 'b': *args->new_status = EKG_STATUS_AVAIL; break;
+		case 'd': *args->new_status = EKG_STATUS_DND; break;
+		case 'f': *args->new_status = EKG_STATUS_FFC; break;
+		case 'i': *args->new_status = EKG_STATUS_INVISIBLE; break;
+		case 'x': *args->new_status = EKG_STATUS_XA; break;
+	}
+	xfree(*args->new_descr);
+	*args->new_descr = xstrdup(optval);
+
+	return TRUE;
+}
+
 int main(int argc, char **argv)
 {
 	gint auto_connect = 1, no_global_config = 0, no_config = 0, new_status = 0, print_version = 0;
 	char *tmp = NULL, *new_descr = NULL;
 	gchar *load_theme = NULL, *new_profile = NULL, *frontend = NULL;
-	GOptionContext *opt;
 	GError *err = NULL;
 #ifndef NO_POSIX_SYSTEM
 	struct rlimit rlim;
 #else
 	WSADATA wsaData;
 #endif
-
-	gboolean set_status_callback(const gchar *optname, const gchar *optval,
-			gpointer data, GError **error) {
-
-		gchar c = optname[1] == '-' ? optname[2] : optname[1];
-		switch (c) {
-			case 'a': new_status = EKG_STATUS_AWAY; break;
-			case 'b': new_status = EKG_STATUS_AVAIL; break;
-			case 'd': new_status = EKG_STATUS_DND; break;
-			case 'f': new_status = EKG_STATUS_FFC; break;
-			case 'i': new_status = EKG_STATUS_INVISIBLE; break;
-			case 'x': new_status = EKG_STATUS_XA; break;
-		}
-		xfree(new_descr);
-		new_descr = xstrdup(optval);
-
-		return TRUE;
-	}
 
 	g_type_init();
 
@@ -603,17 +566,29 @@ int main(int argc, char **argv)
 	ekg_options[11].arg_data = &set_status_callback;
 	ekg_options[12].arg_data = &print_version;
 
-	opt = g_option_context_new("[COMMAND...]");
-	g_option_context_set_description(opt, "Options concerned with status depend on the protocol of particular session -- \n" \
-"some sessions may not support ``do not disturb'' status, etc.\n");
-	g_option_context_add_main_entries(opt, ekg_options, "ekg2");
+	{
+		GOptionContext *opt;
+		GOptionGroup *g;
+		struct option_callback_args optargs = { &new_status, &new_descr };
 
-	if (!g_option_context_parse(opt, &argc, &argv, &err)) {
-		g_print("Option parsing failed: %s\n", err->message);
-		return 1;
+		opt = g_option_context_new("[COMMAND...]");
+		g = g_option_group_new(NULL, NULL, NULL, &optargs, NULL);
+
+		g_option_group_add_entries(g, ekg_options);
+		g_option_group_set_translation_domain(g, "ekg2");
+
+		g_option_context_set_description(opt, "Options concerned with status depend on the protocol of particular session -- \n" \
+	"some sessions may not support ``do not disturb'' status, etc.\n");
+		g_option_context_set_main_group(opt, g);
+
+		if (!g_option_context_parse(opt, &argc, &argv, &err)) {
+			g_print("Option parsing failed: %s\n", err->message);
+			return 1;
+		}
+
+		g_option_context_free(opt);
+		/* GOptionGroup is freed implicitly */
 	}
-	
-	g_option_context_free(opt);
 
 	if (print_version) {
 		g_print("ekg2-%s (compiled on %s)\n", VERSION, compile_time());

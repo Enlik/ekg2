@@ -45,9 +45,10 @@ struct ekg_connection {
 	gpointer priv_data;
 	ekg_input_callback_t callback;
 	ekg_failure_callback_t failure_callback;
-	ekg_input_type_t in_type;
 
 	ekg_flush_handler_t flush_handler;
+
+	GString *wr_buffer;
 
 #if NEED_SLAVERY
 	struct ekg_connection *master;
@@ -73,8 +74,10 @@ static G_GNUC_CONST GQuark ekg_gnutls_error_quark() {
 #endif
 
 static void ekg_connection_remove(struct ekg_connection *c) {
-	g_assert(!g_input_stream_has_pending(
-				G_INPUT_STREAM(c->instream)));
+	if (g_input_stream_has_pending(G_INPUT_STREAM(c->instream))) {
+		debug_warn("ekg_connection_remove(%x) input stream has pending!\n", c);
+		g_input_stream_clear_pending(G_INPUT_STREAM(c->instream));
+	}
 #if 0 /* XXX */
 	g_assert(!g_output_stream_has_pending(
 				G_OUTPUT_STREAM(c->outstream)));
@@ -82,6 +85,7 @@ static void ekg_connection_remove(struct ekg_connection *c) {
 
 	connections = g_slist_remove(connections, c);
 
+	g_string_free(c->wr_buffer, TRUE);
 	g_object_unref(c->cancellable);
 	g_object_unref(c->instream);
 	g_object_unref(c->outstream);
@@ -116,35 +120,6 @@ static struct ekg_connection *get_slave_connection_by_conn(GSocketConnection *c)
 }
 #endif
 
-static void done_read(
-		struct ekg_connection *c,
-		GBufferedInputStream *instr)
-{
-	switch (c->in_type) {
-		case EKG_INPUT_RAW:
-			c->callback(c->instream, c->priv_data);
-			break;
-
-		case EKG_INPUT_LINE:
-			{
-				const char *buf;
-				const char *le = "\r\n"; /* CRLF; XXX: other line endings? */
-				gsize count;
-				gboolean found;
-
-				do { /* repeat till user grabs all lines */
-					buf = g_buffered_input_stream_peek_buffer(instr, &count);
-					found = !!g_strstr_len(buf, count, le);
-					if (found)
-						c->callback(c->instream, c->priv_data);
-				} while (found);
-				break;
-			}
-
-		default:
-			g_assert_not_reached();
-	}
-}
 
 static void done_async_read(GObject *obj, GAsyncResult *res, gpointer user_data) {
 	struct ekg_connection *c = user_data;
@@ -180,7 +155,7 @@ static void done_async_read(GObject *obj, GAsyncResult *res, gpointer user_data)
 
 	debug_function("done_async_read(): read %d bytes\n", rsize);
 
-	done_read(c, instr);
+	c->callback(c->instream, c->priv_data);
 	setup_async_read(c);
 }
 
@@ -202,8 +177,9 @@ static void done_async_write(GObject *obj, GAsyncResult *res, gpointer user_data
 	struct ekg_connection *c = user_data;
 	GError *err = NULL;
 	gboolean ret;
+	GOutputStream *of = G_OUTPUT_STREAM(obj);
 
-	ret = g_output_stream_flush_finish(G_OUTPUT_STREAM(obj), res, &err);
+	ret = g_output_stream_flush_finish(of, res, &err);
 
 	if (!ret) {
 		debug_error("done_async_write(), write failed: %s\n", err ? err->message : NULL);
@@ -211,6 +187,17 @@ static void done_async_write(GObject *obj, GAsyncResult *res, gpointer user_data
 		failed_write(c);
 		g_error_free(err);
 		return;
+	}
+
+	if (c->wr_buffer->len > 0) {
+		/* the stream should not have any pending writes ATM
+		 * we need to ensure that to have the data written to stream
+		 * rather than re-appended to the buffer*/
+		g_assert(!g_output_stream_has_pending(of));
+
+		ekg_connection_write_buf(G_DATA_OUTPUT_STREAM(of),
+				c->wr_buffer->str, c->wr_buffer->len);
+		g_string_truncate(c->wr_buffer, 0);
 	}
 
 	/* XXX: anything to do? */
@@ -229,7 +216,6 @@ GDataOutputStream *ekg_connection_add(
 		GSocketConnection *conn,
 		GInputStream *raw_instream,
 		GOutputStream *raw_outstream,
-		ekg_input_type_t in_type,
 		ekg_input_callback_t callback,
 		ekg_failure_callback_t failure_callback,
 		gpointer priv_data)
@@ -241,11 +227,11 @@ GDataOutputStream *ekg_connection_add(
 	c->instream = g_data_input_stream_new(raw_instream);
 	c->outstream = g_data_output_stream_new(bout);
 	c->cancellable = g_cancellable_new();
+	c->wr_buffer = g_string_new("");
 
 	c->callback = callback;
 	c->failure_callback = failure_callback;
 	c->priv_data = priv_data;
-	c->in_type = in_type;
 
 #if NEED_SLAVERY
 	c->master = get_slave_connection_by_conn(conn);
@@ -268,8 +254,8 @@ GDataOutputStream *ekg_connection_add(
 #endif
 		c->flush_handler = setup_async_write;
 
-		/* CRLF is common in network protocols */
-	g_data_input_stream_set_newline_type(c->instream, G_DATA_STREAM_NEWLINE_TYPE_CR_LF);
+		/* LF works fine for CRLF */
+	g_data_input_stream_set_newline_type(c->instream, G_DATA_STREAM_NEWLINE_TYPE_LF);
 		/* disallow any blocking writes */
 	g_buffered_output_stream_set_auto_grow(G_BUFFERED_OUTPUT_STREAM(bout), TRUE);
 
@@ -282,16 +268,31 @@ GDataOutputStream *ekg_connection_add(
 	return c->outstream;
 }
 
+void ekg_disconnect_by_outstream(GDataOutputStream *f) {
+	struct ekg_connection *c = get_connection_by_outstream(f);
+
+	if (!c) {
+		debug_warn("ekg_disconnect_by_outstream() - connection not found\n");
+		return;
+	}
+
+	debug_function("ekg_disconnect_by_outstream(%x)\n",c);
+
+	ekg_connection_remove(c);
+}
+
 void ekg_connection_write_buf(GDataOutputStream *f, gconstpointer buf, gsize len) {
 	struct ekg_connection *c = get_connection_by_outstream(f);
 	GError *err = NULL;
 	gssize out;
 	GOutputStream *of = G_OUTPUT_STREAM(f);
 
-	/* we need to abort current flush in order to append to buf,
+	/* we can't write to buffer if it has pending ops;
 	 * yes, it is stupid. */
-	/* XXX: is this enough or should we actually cancel the flush? */
-	g_output_stream_clear_pending(of);
+	if (g_output_stream_has_pending(of)) {
+		c->wr_buffer = g_string_append_len(c->wr_buffer, buf, len);
+		return;
+	}
 
 	out = g_output_stream_write(of, buf, len, NULL, &err);
 	if (out != len) {
@@ -776,7 +777,6 @@ static void ekg_gnutls_new_session(
 				sock,
 				g_io_stream_get_input_stream(G_IO_STREAM(sock)),
 				g_io_stream_get_output_stream(G_IO_STREAM(sock)),
-				EKG_INPUT_RAW,
 				ekg_gnutls_handle_handshake_input,
 				ekg_gnutls_handle_handshake_failure,
 				gcs)

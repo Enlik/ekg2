@@ -13,6 +13,7 @@ bin_PROGRAMS = ekg2
 noinst_HEADERS = \
 	ekg2.h \
 	ekg2-config.h \
+	ekg/abort.h \
 	ekg/bindings.h \
 	ekg/commands.h \
 	ekg/completion.h \
@@ -48,6 +49,7 @@ noinst_HEADERS = \
 ekg2_SOURCES = \
 	gettext.h \
 	$(noinst_HEADERS) \
+	ekg/abort.c \
 	ekg/bindings.c \
 	ekg/commands.c \
 	ekg/completion.c \
@@ -158,7 +160,8 @@ check_LTLIBRARIES = plugins/check/check.la
 plugins_check_check_la_SOURCES = \
 	$(noinst_HEADERS) \
 	plugins/check/check.c \
-	plugins/check/recode.c
+	plugins/check/recode.c \
+	plugins/check/static-aborts.c
 
 plugins_check_check_la_LDFLAGS = -module -avoid-version -shared -rpath $(abs_top_builddir)/plugins/check
 plugins_check_check_la_CPPFLAGS = $(AM_CPPFLAGS) $(EKG_CPPFLAGS)
@@ -596,6 +599,19 @@ dist_python_DATA = \
 dist_script_DATA += \
 	contrib/python/notify-bubble.py \
 	contrib/python/sample.py
+endif
+
+if ENABLE_RC
+plugin_LTLIBRARIES += plugins/rc/rc.la
+
+plugins_rc_rc_la_SOURCES = \
+	$(noinst_HEADERS) \
+	plugins/rc/rc.h \
+	plugins/rc/inputs.c \
+	plugins/rc/main.c
+
+dist_rc_DATA = \
+	plugins/rc/vars-pl.txt
 endif
 
 if ENABLE_READLINE

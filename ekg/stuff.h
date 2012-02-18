@@ -47,6 +47,7 @@
 #include "plugins.h"
 #include "sessions.h"
 #include "userlist.h"
+#include "vars.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -190,6 +191,8 @@ extern char *config_exit_exec;
 extern int config_session_locks;
 extern char *config_nickname;
 
+extern char *formated_config_timestamp;
+
 extern char *home_dir;
 extern char *config_dir;
 extern const char *console_charset;
@@ -222,6 +225,7 @@ void changed_display_blinking(const char *var);
 void changed_make_window(const char *var);
 void changed_mesg(const char *var);
 void changed_theme(const char *var);
+void changed_config_timestamp(const char *var);
 
 const char *compile_time();
 
@@ -289,6 +293,14 @@ int isalpha_pl(unsigned char c);
 #define xtolower(c) tolower((int) (unsigned char) c)
 #define xtoupper(c) toupper((int) (unsigned char) c)
 
+void ignore_result_helper(int __attribute__((unused)) dummy, ...);
+
+#ifdef __GNUC__
+# define IGNORE_RESULT(X) ignore_result_helper(0, (X))
+#else
+# define IGNORE_RESULT(X) (X)
+#endif
+
 const char *ekg_status_label(const int status, const char *descr, const char *prefix);
 void ekg_update_status(session_t *session);
 #define ekg_update_status_n(a) ekg_update_status(session_find(a))
@@ -312,6 +324,9 @@ int ekg_converters_display(int quiet);
 char *password_input(const char *prompt, const char *rprompt, const bool norepeat);
 int is_utf8_string(const char *txt);
 
+void variable_display(variable_t *v, int quiet);
+int session_variable_display(session_t *s, const char *name, int quiet);
+void session_variable_info(session_t *s, const char *name, int quiet);
 
 /* funkcje poza stuff.c */
 void ekg_exit();

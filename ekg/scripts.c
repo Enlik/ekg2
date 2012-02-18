@@ -565,24 +565,53 @@ int script_var_unbind(script_var_t *temp, int free)
 
 /****************************************************************************************************/
 
-script_var_t *script_var_add(scriptlang_t *s, script_t *scr, char *name, char *value, void *handler)
+script_var_t *script_var_add_full(scriptlang_t *s, script_t *scr, char *name, int type, char *value, void *handler)
 {
 	script_var_t *tmp;
 	tmp = script_var_find(name);
 	if (tmp) {
 		tmp->scr = scr;
 		tmp->priv_data = handler;
-		if (in_autoexec) /* i think it is enough, not tested. */
-			variable_set(name, value);
+		if ( (tmp->self->type == VAR_STR) && ((type == VAR_INT) || (type == VAR_BOOL)) ) {
+			/* Convert from string values */
+			variable_t *var = tmp->self;
+			int *ival = xmalloc(sizeof(int));
+			if (tmp->value && *(tmp->value))
+				*ival = atoi(tmp->value);
+			if (type == VAR_BOOL)
+				*ival &= 1;
+			g_free(tmp->value);
+			var->ptr = tmp->value = (char*)(ival);
+			tmp->self->type = type;
+		}
 	} else if (!tmp) {
+		void *pVar;
 		SCRIPT_BIND_HEADER(script_var_t);
+
 		temp->name  = xstrdup(name);
-		temp->value = xstrdup(value);
-		temp->self = variable_add(NULL, name, VAR_STR, 1, &(temp->value), &script_var_changed, NULL, NULL);
+
+		if ((type == VAR_INT) || (type == VAR_BOOL)) {
+			int *ival = xmalloc(sizeof(int));
+			if (value && *value)
+				*ival = atoi(value);
+			if (type == VAR_BOOL)
+				*ival &= 1;
+			pVar = temp->value = (char*)(ival);
+		} else {
+			temp->value = xstrdup(value);
+			pVar = &(temp->value);
+		}
+
+		temp->self = variable_add(NULL, name, type, 1, pVar, &script_var_changed, NULL, NULL);
 		SCRIPT_BIND_FOOTER(script_vars);
 	} 
 	
 	return tmp;
+}
+
+script_var_t *script_var_add(scriptlang_t *s, script_t *scr, char *name, char *value, void *handler)
+{
+	return script_var_add_full(s, scr, name, VAR_STR, value, handler);
 }
 
 script_command_t *script_command_bind(scriptlang_t *s, script_t *scr, char *command, char *params, char *possibilities, void *handler) 
@@ -915,20 +944,18 @@ static int scripts_autoload(scriptlang_t *scr)
 	debug("[SCRIPTS_AUTOLOAD] DONE: (re)loaded %d scripts\n", i);
 	return i;
 }
-#if 0
+
 int script_postinit(void *data, va_list ap)
 {
 	return scripts_autoload(NULL);
 }
-#endif
+
 int scripts_init()
 {
 	script_variables_read();
-#if 0
+
 	query_connect(NULL, "config-postinit",	   script_postinit, NULL);
-#else
-	scripts_autoload(NULL);
-#endif
+
 	return 0;
 }
 
